@@ -1,0 +1,56 @@
+目論見
+
+Open WebUI、ollama, dockerdesktop, wsl2あたりが稼働中。
+完全にローカルに閉じた環境、セキュリティや認証は不要。
+開発はwin11上、動作はwin11(RTX3080 12G) dockerdesktopか NAS(QNAP TS-231P)を想定。
+NASで動作させる場合、ollamaはwin11で動作し、
+APIのみNAS上Container-stationで極力軽量なコンテナで動作させる。
+
+日本語の自然言語からForgeで画像生成したい。nsfw込み。
+NAS上でFastAPIに実装した　「実装対象API」を動作させる。
+・以下が「希望する動作」である
+1. 実装対象APIに日本語入力->
+2. 実装対象APIがwin11上Ollamaに翻訳のシステムプロンプトとともに日本語入力を投げる->
+3. ollamaの（brxce/stable-diffusion-prompt-generator:latest)でdanbooru仕込みの
+　　英語プロンプトに変換->
+4. 実装対象API内でwin11上のForgeに他のオプション指定とともにプロンプトを投げる->
+5. Forgeが生成された画像をBase64で返してくるので実装対象APIはそれをデコードしてNASに保存->
+6. 実装対象APIがbase64のままの画像を返す。
+
+これを軽量なコンテナでよわよわCPUのNAS上コンテナで実行したい。
+
+Armv7, Alpine Linux (GCCなし), FastApi, uncone, Pydantic あたりで実装。
+ただしPydanticはv2系だとrustが必要になるので、v1系で。他のライブラリもそれに合わせた
+バージョンが必要。
+
+添付は現状でPC上で動作してるollamaによる翻訳API。
+英語（Automatic1111用プロンプト）に変換させる機能は現状でほぼそのまま利用できる。
+
+ーーーーーーーーーーーーーーーーーーーここまでmain.py実装済
+
+翻訳機能＋Automatic1111APIへのプロキシがつくりたい。
+Automatic1111Forgeの　--api オプションで実行した場合のAPI仕様が添付のOpenApi.jsonである。
+
+
+現状の/translate はそのままに。
+
+新規に/get_image を作成する。
+　「希望する動作」を実装。
+
+さらにサポート機能として、
+　モデル切り替え
+　VAE指定（Forgeでfluxを実行する場合には画面上のVAE / Text Encoder欄からTEとUNETの指定が必須な為）
+　画像サイズ指定
+　CFGスケール指定
+　ステップ数指定
+　バッチサイズ指定
+　バッチカウント指定
+が必要。
+できるなら
+　Dynamic PromptのOn/Offは指定したい。
+これらは毎回は実行しないが、実装対象APIにて中継および現在設定値および過去設定履歴の保持と選択できる
+UI(静的index.html)が欲しい。
+
+get / で設定用heml (上記設定項目とプロンプト、ネガティブプロンプト入力欄）
+（現状の　/ はサンプルなのでつぶしてよい）
+

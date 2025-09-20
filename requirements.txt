@@ -1,0 +1,20 @@
+# FastAPI関連
+fastapi==0.104.1
+
+# Pure Python版のuvicorn（軽量、コンパイル不要）
+uvicorn==0.24.0
+websockets==12.0
+python-dotenv==1.0.0
+
+# Pydantic v1を明示的に指定（Rustが不要）
+pydantic>=1.10.0,<2.0.0
+
+# その他の必要最小限のパッケージ
+python-multipart==0.0.6
+
+# プロジェクト固有の依存関係
+ollama==0.3.3
+requests==2.31.0
+
+# 注意: httptools, uvloopは除外（コンパイルが必要なため）
+# 本番環境では多少パフォーマンスが劣るが、軽量で確実に動作する
