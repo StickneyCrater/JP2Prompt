@@ -9,10 +9,12 @@ LABEL version="2.0"
 # 作業ディレクトリを設定
 WORKDIR /app
 
-# 必要最小限のシステムパッケージをインストール
+# 必要最小限のシステムパッケージをインストール (sudo追加)
 RUN apk add --no-cache \
     curl \
     iputils \
+    util-linux \
+    shadow \
     && rm -rf /var/cache/apk/*
 
 # Pythonの依存関係をインストール（Pure Python版）
@@ -24,20 +26,31 @@ RUN pip install --no-cache-dir --upgrade pip \
 # アプリケーションファイルをコピー
 COPY . .
 
-# 画像保存ディレクトリを作成
-RUN mkdir -p /app/images
+# ディレクトリを作成
+RUN mkdir -p /app/images /app/config
 
-# 静的ファイル用ディレクトリを作成
-RUN mkdir -p /app/static
+# 管理用ユーザ rootuser (uid=1000, gid=1000)
+RUN addgroup -g 1000 -S rootuser && \
+    adduser -S -D -H -u 1000 -G rootuser -s /bin/sh rootuser && \
+    echo "rootuser:rootuser123" | chpasswd && \
+    echo "rootuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# アプリ用ユーザ appuser (uid=501, gid=100)
+# gid=100 (everyone) は既に存在するので再作成せず -G 100 で指定する
+RUN adduser -S -D -H -u 501 -G users -s /bin/sh appuser && \
+    echo "appuser:appuser123" | chpasswd
+
+# ディレクトリの所有権を QNAP 側 uid/gid (501:100) に合わせる
+RUN chown -R 501:100 /app && \
+    chmod -R 755 /app && \
+    mkdir -p /tmp/mount_test && \
+    chown 501:100 /tmp/mount_test && \
+    chmod 755 /tmp/mount_test
 
 # favicon.icoが存在することを確認（プレースホルダとして）
-RUN touch favicon.ico
+RUN touch favicon.ico && chown appuser:users favicon.ico
 
-# 非rootユーザーを作成してセキュリティを向上
-RUN addgroup -g 1001 -S appuser && \
-    adduser -S -D -H -u 1001 -G appuser appuser && \
-    chown -R appuser:appuser /app
-
+# 通常ユーザーとして実行
 USER appuser
 
 # 環境変数設定
@@ -46,8 +59,10 @@ ENV TRANSLATE_PORT=8091
 ENV OLLAMA_HOST=192.168.2.197
 ENV OLLAMA_PORT=11434
 ENV FORGE_HOST=192.168.2.197
-ENV FORGE_PORT=7860
+ENV FORGE_PORT=7865
 ENV SAVE_DIR=/app/images
+ENV TRANSLATE_MODEL=brxce/stable-diffusion-prompt-generator:latest
+ENV FORGE_MODEL=sd\\novaAnimeXL_ilV5b.safetensors
 
 # ポート8091を公開
 EXPOSE 8091
@@ -57,4 +72,4 @@ HEALTHCHECK --interval=600s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8091/health || exit 1
 
 # FastAPIアプリケーションを起動
-CMD ["uvicorn", "main:app", "--host", "192.168.2.199", "--port", "8091"]
+CMD ["sh", "-c", "uvicorn main:app --host $TRANSLATE_HOST --port $TRANSLATE_PORT"]

@@ -20,10 +20,13 @@ logger = logging.getLogger(__name__)
 
 # 環境変数設定
 DEFAULT_TRANSLATE_MODEL = os.getenv("TRANSLATE_MODEL", "brxce/stable-diffusion-prompt-generator:latest")
+DEFAULT_FORGE_MODEL = os.getenv("FORGE_MODEL", "sd\\novaAnimeXL_ilV5b.safetensors")
+
 PROMPT_TEMPLATE = os.getenv(
     "TRANSLATE_PROMPT",
     "Translate the following Japanese text into concise, comma-separated English tags optimized for Stable Diffusion prompts in Danbooru style. Return only the translated tags, without any additional descriptions, styles, or metadata: {text}"
 )
+
 TRANSLATE_HOST = os.getenv("TRANSLATE_HOST", "192.168.2.199")
 TRANSLATE_PORT = int(os.getenv("TRANSLATE_PORT", "8091"))
 
@@ -33,18 +36,23 @@ OLLAMA_PORT = os.getenv("OLLAMA_PORT", "11434")
 OLLAMA_URL = f"http://{OLLAMA_HOST}:{OLLAMA_PORT}"
 
 # Forge API設定
-DEFAULT_FORGE_MODEL = os.getenv("FORGE_MODEL", "sd\\ovaAnimeXL_ilV5b.safetensors")
-FORGE_HOST = os.getenv("FORGE_HOST", "127.0.0.1")
-FORGE_PORT = os.getenv("FORGE_PORT", "7860")
+FORGE_HOST = os.getenv("FORGE_HOST", "192.168.2.197")
+FORGE_PORT = os.getenv("FORGE_PORT", "7865")
 FORGE_URL = f"http://{FORGE_HOST}:{FORGE_PORT}"
 
 # 画像保存設定
 SAVE_DIR = os.getenv("SAVE_DIR", "/app/images")
+CONFIG_DIR = "/app/config"
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config_Jp2Prompt.json")
+
+# ディレクトリ作成
 os.makedirs(SAVE_DIR, exist_ok=True)
+os.makedirs(CONFIG_DIR, exist_ok=True)
 
 logger.info(f"Using OLLAMA: {OLLAMA_URL}")
 logger.info(f"Using FORGE: {FORGE_URL}")
 logger.info(f"Image save directory: {SAVE_DIR}")
+logger.info(f"Config file: {CONFIG_FILE}")
 
 # ================================
 # Pydantic モデル定義
@@ -59,7 +67,7 @@ class TranslateRequest(BaseModel):
 class GetImageRequest(BaseModel):
     japanese_prompt: str
     negative_prompt: str = ""
-    model: str = DEFAULT_FORGE_MODEL
+    translate_model: str = DEFAULT_TRANSLATE_MODEL  # 翻訳用モデル
     # 基本パラメータ
     width: int = 512
     height: int = 512
@@ -76,7 +84,7 @@ class GetImageRequest(BaseModel):
 
 class ConfigUpdateRequest(BaseModel):
     # モデル設定
-    sd_model_checkpoint: Optional[str] = DEFAULT_FORGE_MODEL
+    sd_model_checkpoint: Optional[str] = None
     sd_vae: Optional[str] = None
     # VAE/Text Encoder設定 (Flux用)
     selected_modules: Optional[Dict[str, str]] = None
@@ -89,6 +97,9 @@ class ConfigUpdateRequest(BaseModel):
     default_batch_count: Optional[int] = None
     # Dynamic Prompts設定
     dynamic_prompts_enabled: Optional[bool] = None
+    # プロンプト設定
+    default_prompt: Optional[str] = None
+    default_negative_prompt: Optional[str] = None
 
 class HealthResponse(BaseModel):
     status: str
@@ -107,7 +118,7 @@ class ConfigResponse(BaseModel):
 
 class ConfigManager:
     def __init__(self):
-        self.current_config = {
+        self.default_config = {
             "sd_model_checkpoint": DEFAULT_FORGE_MODEL,
             "sd_vae": "Automatic",
             "selected_modules": {},
@@ -117,11 +128,63 @@ class ConfigManager:
             "default_steps": 20,
             "default_batch_size": 1,
             "default_batch_count": 1,
-            "dynamic_prompts_enabled": False
+            "dynamic_prompts_enabled": False,
+            "default_prompt": "masterpiece, best quality, highly detailed, ",
+            "default_negative_prompt": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, "
         }
+        self.current_config = self.default_config.copy()
         self.config_history = []
+        self.load_config()
+        
+    def load_config(self):
+        """設定ファイルから設定を読み込み"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    saved_config = json.load(f)
+                    loaded_config = saved_config.get('current_config', {})
+                    
+                    # デフォルト値で初期化した後、保存された設定で上書き
+                    for key, value in loaded_config.items():
+                        if key in self.default_config:
+                            self.current_config[key] = value
+                    
+                    # 新しい設定項目が追加された場合のマイグレーション
+                    config_updated = False
+                    for key, default_value in self.default_config.items():
+                        if key not in self.current_config:
+                            self.current_config[key] = default_value
+                            config_updated = True
+                            logger.info(f"Added new config key: {key} = {default_value}")
+                    
+                    if config_updated:
+                        self.save_config()
+                    
+                    self.config_history = saved_config.get('config_history', [])
+                logger.info(f"Config loaded from {CONFIG_FILE}")
+            else:
+                logger.info("No config file found, using defaults")
+                self.save_config()
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            self.current_config = self.default_config.copy()
+            
+    def save_config(self):
+        """設定ファイルに保存"""
+        try:
+            config_data = {
+                "current_config": self.current_config,
+                "config_history": self.config_history,
+                "last_updated": datetime.now().isoformat()
+            }
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, indent=2, ensure_ascii=False)
+            logger.info(f"Config saved to {CONFIG_FILE}")
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
         
     def update_config(self, new_config: Dict[str, Any]):
+        """設定を更新"""
         # 履歴に現在の設定を保存
         self.config_history.append({
             "timestamp": datetime.now().isoformat(),
@@ -137,6 +200,8 @@ class ConfigManager:
             if value is not None and key in self.current_config:
                 self.current_config[key] = value
                 
+        # ファイルに保存
+        self.save_config()
         logger.info(f"Config updated: {new_config}")
         
     def get_config(self):
@@ -154,7 +219,7 @@ config_manager = ConfigManager()
 app = FastAPI(
     title="Japanese to English Translation & Image Generation API",
     description="API for translating Japanese prompts and generating images using Ollama LLMs and Automatic1111 Forge.",
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -167,9 +232,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 静的ファイル配信設定
-app.mount("/static", StaticFiles(directory="static", html=True), name="static")
 
 _context_store: Dict[str, Dict[str, Any]] = {}
 
@@ -194,11 +256,9 @@ async def get_forge_models():
 async def get_forge_vaes():
     """ForgeからVAE一覧を取得"""
     try:
-        # Forge APIから設定を取得してVAE情報を得る
         response = requests.get(f"{FORGE_URL}/sdapi/v1/options", timeout=10)
         if response.status_code == 200:
-            # 通常はsd_vae設定から利用可能なVAEを取得
-            return ["Automatic", "None"]  # 基本的な選択肢
+            return ["Automatic", "None"]
         else:
             return ["Automatic", "None"]
     except Exception as e:
@@ -240,41 +300,54 @@ async def translate_japanese_prompt(japanese_text: str, model: str = DEFAULT_TRA
         logger.error(f"Translation error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Translation error: {str(e)}")
 
-async def generate_image_with_forge(prompt: str, params: Dict[str, Any]):
+async def generate_image_with_forge(translated_prompt: str, params: Dict[str, Any], config: Dict[str, Any]):
     """Forge APIを使用して画像生成"""
     try:
-        # Forge APIのtxt2imgエンドポイントを使用
+        # デフォルトプロンプトと翻訳されたプロンプトを結合
+        default_prompt = config.get("default_prompt", "")
+        default_negative_prompt = config.get("default_negative_prompt", "")
+        
+        # プロンプトを結合し重複除去
+        final_prompt = combine_prompts(default_prompt, translated_prompt)
+        final_negative_prompt = combine_prompts(default_negative_prompt, params.get("negative_prompt", ""))
+        
         forge_params = {
-            "prompt": prompt,
-            "negative_prompt": params.get("negative_prompt", ""),
+            "prompt": final_prompt,
+            "negative_prompt": final_negative_prompt,
             "width": params.get("width", 512),
             "height": params.get("height", 512),
             "cfg_scale": params.get("cfg_scale", 7.0),
             "steps": params.get("steps", 20),
             "batch_size": params.get("batch_size", 1),
             "n_iter": params.get("batch_count", 1),
-            "sampler_name": "Euler a",  # デフォルトサンプラー
-            "save_images": False,  # APIでは保存しない
-            "send_images": True,   # Base64で画像を返す
+            "sampler_name": "Euler a",
+            "save_images": False,
+            "send_images": True,
         }
         
         # Dynamic Prompts設定
         if params.get("dynamic_prompts", False):
             forge_params["alwayson_scripts"] = {
                 "Dynamic Prompts": {
-                    "args": [True]  # Dynamic Promptsを有効化
+                    "args": [True]
                 }
             }
         
+        logger.info(f"Final prompt: {final_prompt[:100]}...")
+        logger.info(f"Final negative prompt: {final_negative_prompt[:100]}...")
         logger.info(f"Generating image with Forge API: {forge_params}")
+        
         response = requests.post(
             f"{FORGE_URL}/sdapi/v1/txt2img",
             json=forge_params,
-            timeout=600  # 10分のタイムアウト
+            timeout=600
         )
         
         if response.status_code == 200:
             result = response.json()
+            # 結果にプロンプト情報を追加
+            result["final_prompt"] = final_prompt
+            result["final_negative_prompt"] = final_negative_prompt
             return result
         else:
             logger.error(f"Forge API error: {response.status_code} - {response.text}")
@@ -292,22 +365,71 @@ async def generate_image_with_forge(prompt: str, params: Dict[str, Any]):
 async def save_image_to_nas(image_base64: str, filename: str):
     """Base64画像をNASに保存"""
     try:
-        # Base64をデコード
         image_data = base64.b64decode(image_base64)
-        
-        # ファイルパス生成
         filepath = os.path.join(SAVE_DIR, filename)
         
-        # 画像を保存
-        with open(filepath, "wb") as f:
-            f.write(image_data)
+        # ディレクトリの権限確認・修正
+        if not os.path.exists(SAVE_DIR):
+            os.makedirs(SAVE_DIR, mode=0o755, exist_ok=True)
+            logger.info(f"Created directory: {SAVE_DIR}")
+        
+        # ファイル保存前に権限確認
+        try:
+            with open(filepath, "wb") as f:
+                f.write(image_data)
+            logger.info(f"Image saved successfully: {filepath}")
+        except PermissionError as pe:
+            # 権限エラーの場合、詳細ログを出力
+            import pwd
+            import grp
+            import stat
             
-        logger.info(f"Image saved: {filepath}")
+            dir_stat = os.stat(SAVE_DIR)
+            current_user = pwd.getpwuid(os.getuid()).pw_name
+            current_group = grp.getgrgid(os.getgid()).gr_name
+            dir_owner = pwd.getpwuid(dir_stat.st_uid).pw_name
+            dir_group = grp.getgrgid(dir_stat.st_gid).gr_name
+            dir_permissions = oct(stat.S_IMODE(dir_stat.st_mode))
+            
+            logger.error(f"Permission denied details:")
+            logger.error(f"  Current user: {current_user}({os.getuid()})")
+            logger.error(f"  Current group: {current_group}({os.getgid()})")
+            logger.error(f"  Directory: {SAVE_DIR}")
+            logger.error(f"  Directory owner: {dir_owner}({dir_stat.st_uid})")
+            logger.error(f"  Directory group: {dir_group}({dir_stat.st_gid})")
+            logger.error(f"  Directory permissions: {dir_permissions}")
+            
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Permission denied: Cannot write to {SAVE_DIR}. Current user: {current_user}, Directory owner: {dir_owner}, Permissions: {dir_permissions}"
+            )
+            
         return filepath
         
     except Exception as e:
         logger.error(f"Error saving image: {e}")
         raise HTTPException(status_code=500, detail=f"Error saving image: {str(e)}")
+
+def remove_duplicate_tags(prompt: str) -> str:
+    """プロンプトから重複タグを除去"""
+    # カンマ区切りでタグを分割
+    tags = [tag.strip() for tag in prompt.split(',') if tag.strip()]
+    
+    # 重複除去（順序を保持）
+    seen = set()
+    unique_tags = []
+    for tag in tags:
+        tag_lower = tag.lower()
+        if tag_lower not in seen:
+            seen.add(tag_lower)
+            unique_tags.append(tag)
+    
+    return ', '.join(unique_tags)
+
+def combine_prompts(default_prompt: str, user_prompt: str) -> str:
+    """デフォルトプロンプトとユーザープロンプトを結合し、重複を除去"""
+    combined = f"{default_prompt.strip()}, {user_prompt.strip()}"
+    return remove_duplicate_tags(combined)
 
 # ================================
 # 基本エンドポイント
@@ -356,14 +478,13 @@ async def get_settings_ui():
             .form-row { display: flex; gap: 15px; }
             .form-row .form-group { flex: 1; }
             .image-result { margin-top: 20px; }
-            .image-result img { max-width: 100%; height: auto; border-radius: 4px; }
+            .image-result img { max-width: 100%; height: auto; border-radius: 4px; margin-bottom: 10px; }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>AI Image Generation Settings</h1>
             
-            <!-- 画像生成フォーム -->
             <form id="imageForm">
                 <div class="form-group">
                     <label for="japanesePrompt">日本語プロンプト:</label>
@@ -421,7 +542,6 @@ async def get_settings_ui():
             <div id="result" class="result"></div>
             <div id="imageResult" class="image-result"></div>
             
-            <!-- 設定管理セクション -->
             <div class="config-section">
                 <h2>Model Configuration</h2>
                 <form id="configForm">
@@ -440,7 +560,29 @@ async def get_settings_ui():
                         </select>
                     </div>
                     
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="defaultWidth">Default Width:</label>
+                            <input type="number" id="defaultWidth" name="default_width" value="512" min="64" max="2048" step="64">
+                        </div>
+                        <div class="form-group">
+                            <label for="defaultHeight">Default Height:</label>
+                            <input type="number" id="defaultHeight" name="default_height" value="512" min="64" max="2048" step="64">
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="defaultPrompt">Default Prompt (プロンプトの前に自動付与):</label>
+                        <textarea id="defaultPrompt" name="default_prompt" placeholder="masterpiece, best quality, highly detailed, "></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="defaultNegativePrompt">Default Negative Prompt (ネガティブプロンプトの前に自動付与):</label>
+                        <textarea id="defaultNegativePrompt" name="default_negative_prompt" placeholder="lowres, bad anatomy, bad hands, text, error, "></textarea>
+                    </div>
+                    
                     <button type="button" onclick="updateConfig()">Update Configuration</button>
+                    <button type="button" class="btn-secondary" onclick="resetConfig()">Reset to Defaults</button>
                     <button type="button" class="btn-secondary" onclick="loadConfigHistory()">Show History</button>
                 </form>
             </div>
@@ -480,38 +622,40 @@ async def get_settings_ui():
                             displayImages(result.images);
                         }
                     } else {
-                        showResult(`Error: ${result.detail}`, 'error');
+                        showResult('Error: ' + result.detail, 'error');
                     }
                 } catch (error) {
-                    showResult(`Network error: ${error.message}`, 'error');
+                    showResult('Network error: ' + error.message, 'error');
                 }
             });
             
-            // 結果表示
             function showResult(message, type) {
                 const resultDiv = document.getElementById('result');
                 resultDiv.textContent = message;
-                resultDiv.className = `result ${type}`;
+                resultDiv.className = 'result ' + type;
                 resultDiv.style.display = 'block';
             }
             
-            // 画像表示
             function displayImages(images) {
                 const imageDiv = document.getElementById('imageResult');
                 imageDiv.innerHTML = '';
                 
                 images.forEach((imageBase64, index) => {
                     const img = document.createElement('img');
-                    img.src = `data:image/png;base64,${imageBase64}`;
-                    img.alt = `Generated image ${index + 1}`;
+                    img.src = 'data:image/png;base64,' + imageBase64;
+                    img.alt = 'Generated image ' + (index + 1);
                     imageDiv.appendChild(img);
                 });
             }
             
-            // 設定更新
             async function updateConfig() {
                 const formData = new FormData(document.getElementById('configForm'));
                 const data = Object.fromEntries(formData.entries());
+                
+                // 数値型に変換
+                ['default_width', 'default_height'].forEach(key => {
+                    if (data[key]) data[key] = parseInt(data[key]);
+                });
                 
                 try {
                     const response = await fetch('/config', {
@@ -525,21 +669,19 @@ async def get_settings_ui():
                     if (response.ok) {
                         showResult('Configuration updated successfully!', 'success');
                     } else {
-                        showResult(`Error: ${result.detail}`, 'error');
+                        showResult('Error: ' + result.detail, 'error');
                     }
                 } catch (error) {
-                    showResult(`Network error: ${error.message}`, 'error');
+                    showResult('Network error: ' + error.message, 'error');
                 }
             }
             
-            // 現在の設定読み込み
             async function loadCurrentConfig() {
                 try {
                     const response = await fetch('/config');
                     const result = await response.json();
                     
                     if (response.ok) {
-                        // フォームに設定値を反映
                         const config = result.current_config;
                         document.getElementById('width').value = config.default_width || 512;
                         document.getElementById('height').value = config.default_height || 512;
@@ -552,11 +694,10 @@ async def get_settings_ui():
                         showResult('Current settings loaded!', 'success');
                     }
                 } catch (error) {
-                    showResult(`Error loading config: ${error.message}`, 'error');
+                    showResult('Error loading config: ' + error.message, 'error');
                 }
             }
             
-            // 設定履歴表示
             async function loadConfigHistory() {
                 try {
                     const response = await fetch('/config');
@@ -564,25 +705,48 @@ async def get_settings_ui():
                     
                     if (response.ok && result.config_history.length > 0) {
                         const historyText = result.config_history
-                            .map(h => `${h.timestamp}: ${JSON.stringify(h.config, null, 2)}`)
+                            .map(h => h.timestamp + ': ' + JSON.stringify(h.config, null, 2))
                             .join('\\n\\n');
-                        alert(`Configuration History:\\n\\n${historyText}`);
+                        alert('Configuration History:\\n\\n' + historyText);
                     } else {
                         showResult('No configuration history available.', 'success');
                     }
                 } catch (error) {
-                    showResult(`Error loading history: ${error.message}`, 'error');
+                    showResult('Error loading history: ' + error.message, 'error');
                 }
             }
             
-            // ページ読み込み時にモデル一覧を取得
+            async function resetConfig() {
+                if (!confirm('Are you sure you want to reset all settings to default values?')) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/config/reset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (response.ok) {
+                        showResult('Configuration reset to defaults!', 'success');
+                        // ページをリロードして最新の設定を反映
+                        setTimeout(() => location.reload(), 1000);
+                    } else {
+                        showResult('Error: ' + result.detail, 'error');
+                    }
+                } catch (error) {
+                    showResult('Network error: ' + error.message, 'error');
+                }
+            }
+            
             window.addEventListener('load', async function() {
                 try {
                     const response = await fetch('/config');
                     const result = await response.json();
                     
                     if (response.ok) {
-                        // モデル選択肢を更新
                         const modelSelect = document.getElementById('selectedModel');
                         modelSelect.innerHTML = '<option value="">Select Model</option>';
                         result.available_models.forEach(model => {
@@ -592,10 +756,17 @@ async def get_settings_ui():
                             modelSelect.appendChild(option);
                         });
                         
-                        // 現在の設定を反映
                         if (result.current_config.sd_model_checkpoint) {
                             modelSelect.value = result.current_config.sd_model_checkpoint;
                         }
+                        
+                        // フォームに現在の設定を反映
+                        const config = result.current_config;
+                        document.getElementById('defaultWidth').value = config.default_width || 512;
+                        document.getElementById('defaultHeight').value = config.default_height || 512;
+                        document.getElementById('selectedVae').value = config.sd_vae || 'Automatic';
+                        document.getElementById('defaultPrompt').value = config.default_prompt || '';
+                        document.getElementById('defaultNegativePrompt').value = config.default_negative_prompt || '';
                     }
                 } catch (error) {
                     console.error('Error loading initial config:', error);
@@ -635,14 +806,14 @@ async def translate_jp_to_en(request: TranslateRequest):
 async def get_image(request: GetImageRequest):
     """日本語プロンプトから画像生成"""
     try:
-        # 1. 日本語プロンプトを英語に翻訳
         logger.info(f"Starting image generation for: {request.japanese_prompt[:50]}...")
-        translated_prompt = await translate_japanese_prompt(request.japanese_prompt, request.model)
+        translated_prompt = await translate_japanese_prompt(
+            request.japanese_prompt, 
+            request.translate_model
+        )
         
-        # 2. 現在の設定を取得して画像生成パラメータを構築
         current_config = config_manager.get_config()
         
-        # 設定値の優先順位: リクエスト > 現在の設定 > デフォルト
         params = {
             "negative_prompt": request.negative_prompt,
             "width": request.width or current_config.get("default_width", 512),
@@ -654,10 +825,8 @@ async def get_image(request: GetImageRequest):
             "dynamic_prompts": request.dynamic_prompts or current_config.get("dynamic_prompts_enabled", False),
         }
         
-        # 3. Forge APIで画像生成
-        forge_response = await generate_image_with_forge(translated_prompt, params)
+        forge_response = await generate_image_with_forge(translated_prompt, params, current_config)
         
-        # 4. 生成された画像をNASに保存
         saved_files = []
         if "images" in forge_response and forge_response["images"]:
             for i, image_base64 in enumerate(forge_response["images"]):
@@ -666,7 +835,6 @@ async def get_image(request: GetImageRequest):
                 filepath = await save_image_to_nas(image_base64, filename)
                 saved_files.append(filepath)
         
-        # 5. レスポンスを返す（Base64のまま）
         return {
             "translated_prompt": translated_prompt,
             "images": forge_response.get("images", []),
@@ -746,6 +914,22 @@ async def update_config(request: ConfigUpdateRequest):
         logger.error(f"Config update failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Config update failed: {str(e)}")
 
+@app.post("/config/reset", tags=["configuration"])
+async def reset_config():
+    """設定をデフォルト値にリセット"""
+    try:
+        config_manager.current_config = config_manager.default_config.copy()
+        config_manager.save_config()
+        
+        return {
+            "message": "Configuration reset to default values",
+            "config": config_manager.get_config()
+        }
+        
+    except Exception as e:
+        logger.error(f"Config reset failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Config reset failed: {str(e)}")
+
 # ================================
 # システム情報エンドポイント
 # ================================
@@ -770,7 +954,6 @@ async def get_system_info():
         ollama_status = "disconnected"
         try:
             ollama_client = Client(host=OLLAMA_URL)
-            # 簡単なテスト生成
             response = ollama_client.generate(
                 model=DEFAULT_TRANSLATE_MODEL,
                 prompt="test",
@@ -795,6 +978,7 @@ async def get_system_info():
             },
             "storage": {
                 "save_directory": SAVE_DIR,
+                "config_directory": CONFIG_DIR,
                 "available": os.path.exists(SAVE_DIR)
             },
             "config": config_manager.get_config()
@@ -887,6 +1071,7 @@ if __name__ == "__main__":
     logger.info(f"Ollama: {OLLAMA_URL}")
     logger.info(f"Forge: {FORGE_URL}")
     logger.info(f"Save directory: {SAVE_DIR}")
+    logger.info(f"Config file: {CONFIG_FILE}")
     
     uvicorn.run(
         app, 

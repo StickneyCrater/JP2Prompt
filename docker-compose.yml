@@ -10,7 +10,7 @@ services:
       - "8091:8091"
     environment:
       # API設定
-      - TRANSLATE_HOST=0.0.0.0
+      - TRANSLATE_HOST=192.168.2.199
       - TRANSLATE_PORT=8091
       
       # Ollama設定（Win11上で動作）
@@ -20,15 +20,16 @@ services:
       
       # Forge設定（Win11上で動作）
       - FORGE_HOST=192.168.2.197
-      - FORGE_PORT=7860
+      - FORGE_PORT=7865
+      - FORGE_MODEL=sd\\novaAnimeXL_ilV5b.safetensors
       
-      # 画像保存設定
+      # 画像・設定保存
       - SAVE_DIR=/app/images
       
     volumes:
       # 画像保存用ボリューム（NAS上のパスにマウント）
       - /wkx/tools/images:/app/images
-      # 設定ファイル永続化用（オプション）
+      # 設定ファイル永続化用
       - /wkx/tools/config:/app/config
       
     restart: unless-stopped
@@ -42,6 +43,10 @@ services:
       
     networks:
       - image-gen-network
+      
+    # デバッグ・管理用（必要に応じてコメントアウト）
+    stdin_open: true
+    tty: true
 
 networks:
   image-gen-network:
@@ -49,10 +54,20 @@ networks:
 
 # 使用方法:
 # 1. NAS上で docker-compose up -d でサービス開始
-# 2. http://NAS_IP:8091 でWeb UIにアクセス
+# 2. http://NAS_IP:8091 でWeb UIにアクセス  
 # 3. http://NAS_IP:8091/docs でAPI documentationにアクセス
-
+#
+# 管理用コマンド:
+# - docker-compose exec image-gen-api su approot  (管理者権限)
+# - docker-compose exec image-gen-api sudo -u appuser sh (通常ユーザー)
+# - docker-compose exec image-gen-api cat /app/config/config_Jp2Prompt.json (設定確認)
+#
 # 注意事項:
 # - OLLAMA_HOST, FORGE_HOSTはWin11のIPアドレスに設定
-# - /share/images はNAS上の画像保存パス（実際のパスに合わせて変更）
-# - ファイアウォールでWin11側のポート(8091, 7860)を開放する必要がある
+# - /wkx/tools/ はNAS上の実際のパスに合わせて変更
+# - ファイアウォールでWin11側のポート(11434, 7865)を開放する必要がある
+#
+# Container-stationでの再デプロイ方法:
+# 1. コンテナを停止
+# 2. イメージを削除 
+# 3. docker-compose up --build -d で再構築
