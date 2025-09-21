@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  image-gen-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: japanese-image-gen-api
+    ports:
+      - "8091:8091"
+    environment:
+      # API設定
+      - TRANSLATE_HOST=0.0.0.0
+      - TRANSLATE_PORT=8091
+      
+      # Ollama設定（Win11上で動作）
+      - OLLAMA_HOST=192.168.2.197
+      - OLLAMA_PORT=11434
+      - TRANSLATE_MODEL=brxce/stable-diffusion-prompt-generator:latest
+      
+      # Forge設定（Win11上で動作）
+      - FORGE_HOST=192.168.2.197
+      - FORGE_PORT=7860
+      
+      # 画像保存設定
+      - SAVE_DIR=/app/images
+      
+    volumes:
+      # 画像保存用ボリューム（NAS上のパスにマウント）
+      - /wkx/tools/images:/app/images
+      # 設定ファイル永続化用（オプション）
+      - /wkx/tools/config:/app/config
+      
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+      
+    networks:
+      - image-gen-network
+
+networks:
+  image-gen-network:
+    driver: bridge
+
+# 使用方法:
+# 1. NAS上で docker-compose up -d でサービス開始
+# 2. http://NAS_IP:8091 でWeb UIにアクセス
+# 3. http://NAS_IP:8091/docs でAPI documentationにアクセス
+
+# 注意事項:
+# - OLLAMA_HOST, FORGE_HOSTはWin11のIPアドレスに設定
+# - /share/images はNAS上の画像保存パス（実際のパスに合わせて変更）
+# - ファイアウォールでWin11側のポート(8091, 7860)を開放する必要がある

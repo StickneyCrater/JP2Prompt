@@ -16,5 +16,8 @@ python-multipart==0.0.6
 ollama==0.3.3
 requests==2.31.0
 
+# 画像処理・Base64処理用（標準ライブラリなので不要だが明示）
+# base64, os, datetime, json, uuid は標準ライブラリ
+
 # 注意: httptools, uvloopは除外（コンパイルが必要なため）
 # 本番環境では多少パフォーマンスが劣るが、軽量で確実に動作する
